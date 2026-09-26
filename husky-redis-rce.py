@@ -40,6 +40,17 @@ import time
 
 
 # ─── Colors ─────────────────────────────────────────────────────────────────
+RST  = "\033[0m"
+BOLD_A = "\033[1m"
+
+def cyan(s):  return f"\033[96m{s}{RST}"
+def red(s):   return f"\033[91m{s}{RST}"
+def green(s): return f"\033[92m{s}{RST}"
+def yellow(s):return f"\033[93m{s}{RST}"
+def blue(s):  return f"\033[94m{s}{RST}"
+def bold(s):  return f"\033[1m{s}{RST}"
+def dim(s):   return f"\033[2m{s}{RST}"
+
 class C:
     RST  = "\033[0m"
     BOLD = "\033[1m"
@@ -50,7 +61,6 @@ class C:
     MAG  = "\033[95m"
     CYN  = "\033[96m"
     DIM  = "\033[2m"
-    WHT  = "\033[97m"
 
 def info(msg):  print(f"{C.BLU}[*]{C.RST} {msg}")
 def good(msg):  print(f"{C.GRN}[+]{C.RST} {msg}")
@@ -63,15 +73,20 @@ def dbg(msg):
 VERBOSE = False
 
 BANNER = f"""
-{C.CYN}         __
-        /  \\        {C.WHT}{C.BOLD}╦ ╦╦ ╦╔═╗╦╔═╦ ╦  ╦═╗╔═╗╔═╗{C.RST}
-{C.CYN}       / ..{C.WHT}|{C.CYN}\\       {C.WHT}{C.BOLD}╠═╣║ ║╚═╗╠╩╗╚╦╝  ╠╦╝║  ║╣{C.RST}
-{C.CYN}      (    ){C.WHT}|{C.CYN}      {C.WHT}{C.BOLD}╩ ╩╚═╝╚═╝╩ ╩ ╩   ╩╚═╚═╝╚═╝{C.RST}
-{C.CYN}     /'|  |'\\     {C.DIM}Redis 4.x/5.x/6.x/7.x RCE{C.RST}
-{C.CYN}    /  |  |  \\    {C.DIM}MODULE LOAD + Persistence{C.RST}
-{C.CYN}   /   |__|   \\   {C.DIM}github.com/HackingHusky{C.RST}
-{C.CYN}  '-.__|  |__.-'
-{C.RST}"""
+{cyan('    __  ____  _______ __ ____  __')}
+{cyan('   / / / / / / / ___// //_/')}\\{cyan(' \\ \\/ /')}
+{cyan('  / /_/ / / / /\\__ \\/ ,<')}   {cyan(' \\  /')}
+{cyan(' / __  / /_/ /___/ / /| |')}  {cyan(' / /')}
+{cyan('/_/ /_/\\____//____/_/ |_|')} {cyan('/_/')}
+{red('    ____  __________  _________    ____  ____________')}
+{red('   / __ \\/ ____/ __ \\/  _/ ___/   / __ \\/ ____/ ____/')}
+{red('  / /_/ / __/ / / / // / \\__ \\   / /_/ / /   / __/')}
+{red(' / _, _/ /___/ /_/ // / ___/ /  / _, _/ /___/ /___')}
+{red('/_/ |_/_____/_____/___//____/  /_/ |_|\\____/_____/')}
+
+    {bold('R E P L I C A T I O N  +  M O D U L E  R C E')}
+    {dim('Persistence first. Shell second. Cron can\'t touch this.')}
+"""
 
 
 # ─── RESP Protocol ──────────────────────────────────────────────────────────
