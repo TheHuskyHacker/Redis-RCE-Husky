@@ -3,7 +3,7 @@
 husky-redis-rce.py — Hacking Husky Redis RCE
 
 Redis 4.x/5.x/6.x/7.x RCE via replication MODULE LOAD chain.
-H andles cron resets, dropped connections, and
+Handles cron resets, dropped connections, and
 unstable targets that wipe your foothold every few minutes.
 
 Based on Ridter/redis-rce and n0b0dyCN/redis-rogue-server,
@@ -50,6 +50,7 @@ class C:
     MAG  = "\033[95m"
     CYN  = "\033[96m"
     DIM  = "\033[2m"
+    WHT  = "\033[97m"
 
 def info(msg):  print(f"{C.BLU}[*]{C.RST} {msg}")
 def good(msg):  print(f"{C.GRN}[+]{C.RST} {msg}")
@@ -61,13 +62,16 @@ def dbg(msg):
 
 VERBOSE = False
 
-BANNER = f"""{C.CYN}
-  ╔═══════════════════════════════════════════════════╗
-  ║  {C.BOLD}🐺 Hacking Husky — Redis RCE{C.RST}{C.CYN}                     ║
-  ║  Replication + MODULE LOAD → Shell                ║
-  ║   github.com/The H         ║
-  ╚═══════════════════════════════════════════════════╝{C.RST}
-"""
+BANNER = f"""
+{C.CYN}         __
+        /  \\        {C.WHT}{C.BOLD}╦ ╦╦ ╦╔═╗╦╔═╦ ╦  ╦═╗╔═╗╔═╗{C.RST}
+{C.CYN}       / ..{C.WHT}|{C.CYN}\\       {C.WHT}{C.BOLD}╠═╣║ ║╚═╗╠╩╗╚╦╝  ╠╦╝║  ║╣{C.RST}
+{C.CYN}      (    ){C.WHT}|{C.CYN}      {C.WHT}{C.BOLD}╩ ╩╚═╝╚═╝╩ ╩ ╩   ╩╚═╚═╝╚═╝{C.RST}
+{C.CYN}     /'|  |'\\     {C.DIM}Redis 4.x/5.x/6.x/7.x RCE{C.RST}
+{C.CYN}    /  |  |  \\    {C.DIM}MODULE LOAD + Persistence{C.RST}
+{C.CYN}   /   |__|   \\   {C.DIM}github.com/HackingHusky{C.RST}
+{C.CYN}  '-.__|  |__.-'
+{C.RST}"""
 
 
 # ─── RESP Protocol ──────────────────────────────────────────────────────────
@@ -369,7 +373,7 @@ def do_shell(r, target):
     try:
         while True:
             try:
-                cmd = input(f"{C.RED}husky{C.RST}({C.CYN}{target}{C.RST})> ").strip()
+                cmd = input(f"{C.CYN}husky{C.RST}@{C.RED}{target}{C.RST}> ").strip()
             except EOFError:
                 break
             if not cmd:
@@ -626,7 +630,7 @@ def main():
     global VERBOSE
 
     parser = argparse.ArgumentParser(
-        description="🐺 Hacking Husky Redis RCE — OSCP Edition",
+        description="Hacking Husky Redis RCE",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
