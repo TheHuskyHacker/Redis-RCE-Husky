@@ -23,7 +23,7 @@ Based on Ridter/redis-rce and n0b0dyCN/redis-rogue-server, rebuilt for OSCP cond
 ## Setup
 
 ```bash
-git clone https://github.com/HackingHusky/Redis-RCE-Husky
+git clone https://github.com/TheHuskyHacker/Redis-RCE-Husky
 cd Redis-RCE-Husky
 chmod +x husky-redis-rce.py
 ```
