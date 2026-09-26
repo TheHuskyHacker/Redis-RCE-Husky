@@ -65,7 +65,7 @@ BANNER = f"""{C.CYN}
   ╔═══════════════════════════════════════════════════╗
   ║  {C.BOLD}🐺 Hacking Husky — Redis RCE{C.RST}{C.CYN}                     ║
   ║  Replication + MODULE LOAD → Shell                ║
-  ║  Built for OSCP | github.com/HackingHusky         ║
+  ║   github.com/The H         ║
   ╚═══════════════════════════════════════════════════╝{C.RST}
 """
 
