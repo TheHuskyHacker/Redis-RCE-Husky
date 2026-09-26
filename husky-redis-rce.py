@@ -102,15 +102,27 @@ def encode_cmd(*args):
 
 
 def recv_all(sock, timeout=3):
-    """Read all available data from socket."""
-    sock.settimeout(timeout)
+    """Read all available data from socket with a HARD total deadline."""
+    deadline = time.time() + timeout
+    sock.settimeout(min(timeout, 2))  # short per-recv timeout
     buf = b""
     try:
-        while True:
+        while time.time() < deadline:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            sock.settimeout(min(remaining, 2))
             chunk = sock.recv(4096)
             if not chunk:
                 break
             buf += chunk
+            # Got data — check if it looks like a complete RESP response
+            # If we have a full response, don't wait for more
+            decoded = buf.decode(errors="replace")
+            if decoded.endswith("\r\n") and any(
+                decoded.startswith(p) for p in ("+", "-", ":", "$", "*")
+            ):
+                break
     except socket.timeout:
         pass
     except OSError:
@@ -151,8 +163,16 @@ class Redis:
         raw = encode_cmd(*args)
         dbg(f"→ {' '.join(str(a) for a in args)}")
         try:
+            self.sock.settimeout(self.timeout)
             self.sock.sendall(raw)
-            resp = recv_all(self.sock, self.timeout)
+            # Use shorter timeout for recv — 3s is plenty for most commands
+            # Only MODULE LOAD and SLAVEOF might need longer
+            cmd_name = str(args[0]).upper() if args else ""
+            recv_timeout = self.timeout if cmd_name in ("MODULE", "SLAVEOF", "SAVE") else 3
+            resp = recv_all(self.sock, recv_timeout)
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            fail(f"Connection lost: {e}")
+            resp = f"-ERR connection lost: {e}"
         except Exception as e:
             resp = f"-ERR {e}"
         dbg(f"← {resp[:120].strip()}")
