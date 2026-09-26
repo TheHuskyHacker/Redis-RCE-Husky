@@ -14,7 +14,7 @@ Combines the MODULE LOAD replication exploit with three persistence methods that
 
 ## Why This Exists
 
-The existing tools ([Ridter/redis-rce](https://github.com/Ridter/redis-rce), [n0b0dyCN/redis-rogue-server](https://github.com/n0b0dyCN/redis-rogue-server)) work fine in a lab. On the exam, you hit a box where:
+The existing tools ([Ridter/redis-rce](https://github.com/Ridter/redis-rce), [n0b0dyCN/redis-rogue-server](https://github.com/n0b0dyCN/redis-rogue-server)) work fine in a lab:
 
 - A cron resets Redis config every 10 minutes → your module gets unloaded
 - The connection drops mid-exploit → you start over
