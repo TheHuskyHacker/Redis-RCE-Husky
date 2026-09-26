@@ -26,7 +26,7 @@ This tool fixes all of that with **persistence-first** options and auto-retry lo
 ## Install
 
 ```bash
-git clone https://github.com/TheHuskyHacker/husky-redis-rce.git
+git clone https://github.com/TheHuskyHacker/Redis-RCE-Husky
 cd husky-redis-rce
 chmod +x husky-redis-rce.py
 
