@@ -8,7 +8,7 @@ Combines the MODULE LOAD replication exploit with three persistence methods that
   ╔═══════════════════════════════════════════════════╗
   ║  🐺 Hacking Husky — Redis RCE                     ║
   ║  Replication + MODULE LOAD → Shell                ║
-  |  github.com/TheHuskyHacker        ║
+  |  github.com/TheHuskyHacker                        ║
   ╚═══════════════════════════════════════════════════╝
 ```
 
